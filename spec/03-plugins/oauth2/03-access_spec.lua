@@ -325,6 +325,26 @@ describe("Plugin: oauth2 (access)", function()
         local body = assert.res_status(400, res)
         assert.equal([[{"redirect_uri":"http:\/\/google.com\/kong?error=invalid_request&error_description=Invalid%20redirect_uri%20that%20does%20not%20match%20with%20any%20redirect_uri%20created%20with%20the%20application"}]], body)
       end)
+      it("#only works when the redirect_uri matches", function()
+        local res = assert(proxy_ssl_client:send {
+          method = "POST",
+          path = "/oauth2/authorize",
+          body = {
+            provision_key = "provision123",
+            authenticated_userid = "id123",
+            client_id = "clientid123",
+            scope = "email",
+            response_type = "code",
+            redirect_uri = "http://google.com/kong"
+          },
+          headers = {
+            ["Host"] = "oauth2.com",
+            ["Content-Type"] = "application/json"
+          }
+        })
+        local body = cjson.decode(assert.res_status(200, res))
+        assert.is_table(ngx.re.match(body.redirect_uri, "^http://google\\.com/kong\\?code=[\\w]{32,32}$"))
+      end)
       it("works even if redirect_uri contains a query string", function()
         local res = assert(proxy_client:send {
           method = "POST",
