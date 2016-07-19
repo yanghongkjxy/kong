@@ -74,10 +74,11 @@ local function gen_default_ssl_cert(kong_config)
   return true
 end
 
+-- returns -1 if 'unlimited'
 local function get_ulimit()
   local ok, _, stdout, stderr = pl_utils.executeex "ulimit -n"
   if not ok then return nil, stderr end
-  return tonumber(pl_stringx.strip(stdout))
+  return (string.find(stdout:lower(), "unlimited") and -1) or tonumber(pl_stringx.strip(stdout))
 end
 
 local function gather_system_infos(compile_env)
@@ -85,6 +86,10 @@ local function gather_system_infos(compile_env)
 
   local ulimit, err = get_ulimit()
   if not ulimit then return nil, err end
+  
+  if ulimit == -1 then
+    -- unlimited value ....
+  end
 
   infos.worker_rlimit = ulimit
   infos.worker_connections = math.min(16384, ulimit)
