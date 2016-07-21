@@ -15,6 +15,7 @@ describe("Plugin: rate-limiting (access)", function()
   local client
 
   local function prepare()
+    helpers.kill_all()
     helpers.dao:drop_schema()
     assert(helpers.dao:run_migrations())
 
@@ -45,13 +46,13 @@ describe("Plugin: rate-limiting (access)", function()
     assert(helpers.dao.plugins:insert {
       name = "rate-limiting",
       api_id = api1.id,
-      config = { minute = 6 }
+      config = { minute = 6, cluster_fault_tolerant = false }
     })
     assert(helpers.dao.plugins:insert {
       name = "rate-limiting",
       api_id = api1.id,
       consumer_id = consumer1.id,
-      config = { minute = 8 }
+      config = { minute = 8, cluster_fault_tolerant = false }
     })
 
     local api2 = assert(helpers.dao.apis:insert {
@@ -61,7 +62,7 @@ describe("Plugin: rate-limiting (access)", function()
     assert(helpers.dao.plugins:insert {
       name = "rate-limiting",
       api_id = api2.id,
-      config = { minute = 6 }
+      config = { minute = 6, cluster_fault_tolerant = false }
     })
 
     local api3 = assert(helpers.dao.apis:insert {
@@ -71,7 +72,7 @@ describe("Plugin: rate-limiting (access)", function()
     assert(helpers.dao.plugins:insert {
       name = "rate-limiting",
       api_id = api3.id,
-      config = { minute = 3, hour = 5 }
+      config = { minute = 3, hour = 5, cluster_fault_tolerant = false }
     })
 
     local api4 = assert(helpers.dao.apis:insert {
@@ -81,7 +82,7 @@ describe("Plugin: rate-limiting (access)", function()
     assert(helpers.dao.plugins:insert {
       name = "rate-limiting",
       api_id = api4.id,
-      config = { minute = 33 }
+      config = { minute = 33, cluster_fault_tolerant = false }
     })
 
     local api5 = assert(helpers.dao.apis:insert {
@@ -91,7 +92,7 @@ describe("Plugin: rate-limiting (access)", function()
     assert(helpers.dao.plugins:insert {
       name = "rate-limiting",
       api_id = api5.id,
-      config = { minute = 6, async = true }
+      config = { minute = 6, cluster_fault_tolerant = false }
     })
 
     local api6 = assert(helpers.dao.apis:insert {
@@ -101,7 +102,7 @@ describe("Plugin: rate-limiting (access)", function()
     assert(helpers.dao.plugins:insert {
       name = "rate-limiting",
       api_id = api6.id,
-      config = { minute = 6, continue_on_error = false }
+      config = { minute = 6, cluster_fault_tolerant = false }
     })
 
     local api7 = assert(helpers.dao.apis:insert {
@@ -111,7 +112,7 @@ describe("Plugin: rate-limiting (access)", function()
     assert(helpers.dao.plugins:insert {
       name = "rate-limiting",
       api_id = api7.id,
-      config = { minute = 6, continue_on_error = true }
+      config = { minute = 6, cluster_fault_tolerant = true }
     })
 
     local api8 = assert(helpers.dao.apis:insert {
@@ -126,7 +127,7 @@ describe("Plugin: rate-limiting (access)", function()
       name = "rate-limiting",
       api_id = api8.id,
       consumer_id = consumer1.id,
-      config = { minute = 6, continue_on_error = true }
+      config = { minute = 6, cluster_fault_tolerant = true }
     })
 
     helpers.prepare_prefix()
@@ -139,7 +140,7 @@ describe("Plugin: rate-limiting (access)", function()
   end)
   teardown(function()
     assert(helpers.stop_kong())
-    helpers.clean_prefix()
+    --helpers.clean_prefix()
   end)
 
   before_each(function()

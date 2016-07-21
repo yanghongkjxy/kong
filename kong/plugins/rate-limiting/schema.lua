@@ -8,8 +8,8 @@ return {
     day = { type = "number" },
     month = { type = "number" },
     year = { type = "number" },
-    async = { type = "boolean", default = false },
-    continue_on_error = { type = "boolean", default = false }
+    policy = { type = "string", enum = {"local", "cluster"}, default = "cluster"},
+    cluster_fault_tolerant = { type = "boolean", default = true }
   },
   self_check = function(schema, plugin_t, dao, is_update)
     local ordered_periods = { "second", "minute", "hour", "day", "month", "year"}
