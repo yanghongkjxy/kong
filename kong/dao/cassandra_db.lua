@@ -80,7 +80,7 @@ local function deserialize_rows(rows, schema)
   local json = require "cjson"
   for i, row in ipairs(rows) do
     for col, value in pairs(row) do
-      if schema.fields[col].type == "table" or schema.fields[col].type == "array" then
+      if schema.fields[col] and (schema.fields[col].type == "table" or schema.fields[col].type == "array") then
         rows[i][col] = json.decode(value)
       end
     end
@@ -307,6 +307,25 @@ function CassandraDB:count(table_name, tbl, schema)
     return nil, err
   elseif res and #res > 0 then
     return res[1].count
+  end
+end
+
+function CassandraDB:increment(table_name, schema, filter_keys, increment_value, options)
+  if options and options.ttl then
+    return nil, "Cannot set the TTL on counter updates"
+  end
+
+  local where, args = get_where(schema, filter_keys)
+  local query = string.format("UPDATE %s SET value = value + ? WHERE %s",
+                              table_name, where)
+
+  table.insert(args, 1, cassandra.counter(increment_value))
+
+  local res, err = self:query(query, args)
+  if err then
+    return nil, err
+  elseif res then
+    return true
   end
 end
 

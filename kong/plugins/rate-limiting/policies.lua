@@ -1,15 +1,46 @@
 local singletons = require "kong.singletons"
+local timestamp = require "kong.tools.timestamp"
 local cache = require "kong.tools.database_cache"
 local ngx_log = ngx.log
 local ngx_timer_at = ngx.timer.at
 
+local get_local_key = function(api_id, identifier, period_date, period)
+  return string.format("ratelimit:%s:%s:%s:%s", api_id, identifier, period_date, period)
+end
+
 return {
   ["local"] = {
     increment = function(api_id, identifier, current_timestamp, value)
-      error("TODO")
+      local periods = timestamp.get_timestamps(current_timestamp)
+      local ok = true
+      for period, period_date in pairs(periods) do
+        local cache_key = get_local_key(api_id, identifier, period_date, period)
+
+        print("Incrementing for: "..cache_key.." with EXPIRATION ")
+
+        if not cache.rawget(cache_key) then
+          cache.rawset(cache_key, 0) --TODO: Set expiration
+        end
+
+        local _, err = cache.incr(cache_key, value)
+        if err then
+          ok = false
+          ngx_log("[rate-limiting] could not increment counter for period '"..period.."': "..tostring(err))
+        end
+      end
+
+      return ok
     end,
     usage = function(api_id, identifier, current_timestamp, name)
-      error("TODO")
+      local periods = timestamp.get_timestamps(current_timestamp)
+      local cache_key = get_local_key(api_id, identifier, periods[name], name)
+      print("RETRIEVING FOR "..cache_key)
+      local current_metric, err = cache.rawget(cache_key)
+      print("AND IT IS: "..(current_metric and current_metric or 0))
+      if err then
+        return nil, err
+      end
+      return current_metric and current_metric or 0
     end
   },
   ["cluster"] = {

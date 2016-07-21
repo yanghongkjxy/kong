@@ -270,6 +270,27 @@ function DAO:update(tbl, filter_keys, options)
   end
 end
 
+function DAO:increment(increment_value, filter_keys, options)
+  -- TODO: Every field in the schema must be the primary key
+  check_arg(increment_value, 1, "number")
+  check_arg(filter_keys, 2, "table")
+  check_not_empty(filter_keys, 2)
+  options = options or {}
+
+  local model = self.model_mt(filter_keys)
+  local ok, err = model:validate {dao = self}
+  if not ok then
+    return nil, err
+  end
+
+  local res, err = self.db:increment(self.table, self.schema, filter_keys, increment_value, options)
+  if err then
+    return nil, err
+  else
+    return res
+  end
+end
+
 --- Delete a row.
 -- Delete a row in table related to this instance. Also deletes all rows with a relashionship to the deleted row
 -- (via foreign key relations). For SQL databases such as PostgreSQL, the underlying implementation

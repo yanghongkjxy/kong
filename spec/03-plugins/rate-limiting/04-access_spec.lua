@@ -7,7 +7,7 @@ local function wait()
   -- of the current minute is > 30, then we wait till the new minute kicks in
   local current_second = timestamp.get_timetable().sec
   if current_second > 1 then
-    os.execute("sleep "..tostring(60 - current_second))
+    --os.execute("sleep "..tostring(60 - current_second))
   end
 end
 
@@ -128,6 +128,16 @@ describe("Plugin: rate-limiting (access)", function()
       api_id = api8.id,
       consumer_id = consumer1.id,
       config = { minute = 6, cluster_fault_tolerant = true }
+    })
+
+    local api9 = assert(helpers.dao.apis:insert {
+      request_host = "test11.com",
+      upstream_url = "http://mockbin.com"
+    })
+    assert(helpers.dao.plugins:insert {
+      name = "rate-limiting",
+      api_id = api9.id,
+      config = { minute = 6, policy = "local" }
     })
 
     helpers.prepare_prefix()
@@ -396,6 +406,38 @@ describe("Plugin: rate-limiting (access)", function()
       assert.res_status(200, res)
       assert.falsy(res.headers["x-ratelimit-limit-minute"])
       assert.falsy(res.headers["x-ratelimit-remaining-minute"])
+    end)
+  end)
+
+  describe("Local Policy", function()
+    it("#only should work", function()
+      -- Default rate-limiting plugin for this API says 6/minute
+      local limit = 6
+
+      for i = 1, limit do
+        --client = assert(helpers.http_client("127.0.0.1", helpers.test_conf.proxy_port))
+        local res = assert(client:send {
+          method = "GET",
+          path = "/status/200/",
+          headers = {
+            ["Host"] = "test11.com"
+          }
+        })
+        assert.res_status(200, res)
+        assert.are.same(tostring(limit), res.headers["x-ratelimit-limit-minute"])
+        assert.are.same(tostring(limit - i), res.headers["x-ratelimit-remaining-minute"])
+      end
+
+      -- Additonal request, while limit is 6/minute
+      local res = assert(client:send {
+        method = "GET",
+        path = "/status/200/",
+        headers = {
+          ["Host"] = "test11.com"
+        }
+      })
+      local body = assert.res_status(429, res)
+      assert.are.equal([[{"message":"API rate limit exceeded"}]], body)
     end)
   end)
 

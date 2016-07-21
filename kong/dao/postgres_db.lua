@@ -337,6 +337,25 @@ function PostgresDB:insert(table_name, schema, model, _, options)
   end
 end
 
+function PostgresDB:increment(table_name, schema, filter_keys, increment_value, options)
+  local where, args = get_where(schema, filter_keys)
+
+  print(where)
+  local inspect = require "inspect"
+  print(inspect(args))
+
+  local query = string.format("SELECT increment('%s', %d, '%s', '%s', '%s')", table_name, increment_value, where_full, where_fields, where_values)
+
+  table.insert(args, 1, cassandra.counter(increment_value))
+
+  local res, err = self:query(query, args)
+  if err then
+    return nil, err
+  elseif res then
+    return true
+  end
+end
+
 function PostgresDB:find(table_name, schema, primary_keys)
   local where = get_where(primary_keys)
   local query = self:get_select_query(get_select_fields(schema), schema, table_name, where)

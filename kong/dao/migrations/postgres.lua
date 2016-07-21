@@ -141,5 +141,28 @@ return {
       DROP TABLE ttls;
       DROP FUNCTION upsert_ttl(text, uuid, text, text, timestamp);
     ]]
+  },
+  {
+    name = "2016-07-21-136713_increments",
+    up = [[
+      CREATE OR REPLACE FUNCTION increment(update text, insert text) RETURNS VOID AS $$
+      DECLARE
+        result text;
+      BEGIN
+        LOOP
+          EXECUTE update INTO result;
+          IF found then
+            RETURN;
+          END IF;
+          BEGIN
+            EXECUTE insert INTO result;
+            RETURN;
+          EXCEPTION WHEN unique_violation THEN
+            -- Do nothing, and loop to try the UPDATE again.
+          END;
+        END LOOP;
+      END;
+      $$ LANGUAGE 'plpgsql';
+    ]]
   }
 }

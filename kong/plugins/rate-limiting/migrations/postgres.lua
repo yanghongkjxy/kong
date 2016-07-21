@@ -31,6 +31,7 @@ return {
     ]],
     down = [[
       DROP TABLE ratelimiting_metrics;
+      DROP FUNCTION increment_rate_limits(uuid, text, text, timestamp, integer)
     ]]
   }
 }
