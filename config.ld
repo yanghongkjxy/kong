@@ -1,9 +1,10 @@
 project='Kong'
 title='public API'
-description='Description of the Kong public API used for developing custom plugins'
+description='Description of the Kong public API used for developing and testing custom plugins'
 format='discount'
 file={
-  './kong/',
+  './kong/dao/',
+  './kong/tools/',
   './spec/',
 }
 dir='doc'

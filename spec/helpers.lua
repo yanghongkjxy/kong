@@ -55,6 +55,13 @@ local function lookup(t, k)
   return nil, ok
 end
 
+--- Waits for a specific condition to become true.
+-- The callback will be repeatedly called (with a 0.2 second interval) until the 
+-- callback returns a thruthy value or the timeout value is exceeded.
+-- @name wait_until
+-- @param f callback function that checks the condition. Should return a truthy value when the condition is met.
+-- @param timeout (optional) in seconds. Maximum time to keep waiting, defaults to 2 if omitted.
+-- @return nothing, just returns when succesful, or throws an error when timing out.
 local function wait_until(f, timeout)
   if type(f) ~= "function" then
     error("arg #1 must be a function", 2)
@@ -684,7 +691,7 @@ luassert:register("assertion", "formparam", req_form_param,
 
 --- Execute a command.
 -- Modified version of `pl.utils.executeex()` so the output can directly be used on an assertion.
--- @name exec
+-- @name execute
 -- @param ... see penlight documentation
 -- @return ok, stderr, stdout; stdout is only included when the result was ok
 local function exec(...)
@@ -696,9 +703,9 @@ local function exec(...)
 end
 
 --- Execute a Kong command.
--- @name exec
+-- @name kong_exec
 -- @param cmd Kong command to execute, eg. `start`, `stop`, etc.
--- @param env table with kong parameters to set as environment variables (each key will automatically be prefixed with `KONG_` and be converted to uppercase)
+-- @param env (optional) table with kong parameters to set as environment variables, overriding the test config (each key will automatically be prefixed with `KONG_` and be converted to uppercase)
 -- @return same output as `exec`
 local function kong_exec(cmd, env)
   cmd = cmd or ""
@@ -710,6 +717,65 @@ local function kong_exec(cmd, env)
   end
 
   return exec(env_vars.." "..BIN_PATH.." "..cmd)
+end
+
+--- Prepare the Kong environment.
+-- creates the workdirectory and deletes any existing one.
+-- @param prefix (optional) path to the working directory, if omitted the test configuration will be used
+-- @name prepare_prefix
+local prepare_prefix = function(prefix)
+  prefix = prefix or conf.prefix
+  exec("rm -rf "..prefix.."/*")
+  return pl_dir.makepath(prefix)
+end
+
+--- Cleans the Kong environment.
+-- Deletes the working directory if it exists.
+-- @param prefix (optional) path to the working directory, if omitted the test configuration will be used
+-- @name clean_prefix
+local clean_prefix = function(prefix)
+  prefix = prefix or conf.prefix
+  if pl_path.exists(prefix) then
+    pl_dir.rmtree(prefix)
+  end
+end
+
+--- Starts Kong.
+-- @param env (optional) table with kong parameters to set as environment variables, overriding the test config (each key will automatically be prefixed with `KONG_` and be converted to uppercase)
+-- @name start_kong
+local start_kong = function(env)
+  return kong_exec("start --conf "..TEST_CONF_PATH, env)
+end
+
+--- Stops Kong.
+-- Stops Kong and will truncate the database tables.
+-- @name stop_kong
+local stop_kong = function()
+  dao:truncate_tables()
+  return kong_exec("stop --prefix "..conf.prefix)
+end
+
+--- Stops all processes.
+-- Will forcefully stop nginx, serf and dnsmasq. It will also truncate the database tables.
+-- @name kill_all
+-- @param prefix (optional) the prefix where the Kong instance to be killed is running. If omitted the test configuration is used.
+local kill_all = function(prefix)
+  local kill = require "kong.cmd.utils.kill"
+
+  dao:truncate_tables()
+
+  local default_conf = conf_loader(nil, {prefix = prefix or conf.prefix})
+  local running_conf = conf_loader(default_conf.kong_conf)
+  if not running_conf then return end
+
+  -- kill kong_tests.conf services
+  for _, pid_path in ipairs {running_conf.nginx_pid,
+                             running_conf.dnsmasq_pid,
+                             running_conf.serf_pid} do
+    if pl_path.exists(pid_path) then
+      kill.kill(pid_path, "-TERM")
+    end
+  end
 end
 
 ----------
@@ -740,41 +806,13 @@ return {
   proxy_client = proxy_client,
   admin_client = admin_client,
   proxy_ssl_client = proxy_ssl_client,
-
-  prepare_prefix = function(prefix)
-    prefix = prefix or conf.prefix
-    exec("rm -rf "..prefix.."/*")
-    return pl_dir.makepath(prefix)
-  end,
-  clean_prefix = function(prefix)
-    prefix = prefix or conf.prefix
-    if pl_path.exists(prefix) then
-      pl_dir.rmtree(prefix)
-    end
-  end,
-  start_kong = function(env)
-    return kong_exec("start --conf "..TEST_CONF_PATH, env)
-  end,
-  stop_kong = function()
-    dao:truncate_tables()
-    return kong_exec("stop --prefix "..conf.prefix)
-  end,
-  kill_all = function(prefix)
-    local kill = require "kong.cmd.utils.kill"
-
-    dao:truncate_tables()
-
-    local default_conf = conf_loader(nil, {prefix = prefix or conf.prefix})
-    local running_conf = conf_loader(default_conf.kong_conf)
-    if not running_conf then return end
-
-    -- kill kong_tests.conf services
-    for _, pid_path in ipairs {running_conf.nginx_pid,
-                               running_conf.dnsmasq_pid,
-                               running_conf.serf_pid} do
-      if pl_path.exists(pid_path) then
-        kill.kill(pid_path, "-TERM")
-      end
-    end
-  end
+  
+  -- environment
+  prepare_prefix = prepare_prefix,
+  clean_prefix = clean_prefix,
+  
+  -- starting/stopping
+  start_kong = start_kong,
+  stop_kong = stop_kong,
+  kill_all = kill_all,
 }
