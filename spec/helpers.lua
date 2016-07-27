@@ -55,13 +55,14 @@ local function lookup(t, k)
   return nil, ok
 end
 
---- Waits for a specific condition to become true.
--- The callback will be repeatedly called (with a 0.2 second interval) until the 
--- callback returns a thruthy value or the timeout value is exceeded.
--- @name wait_until
--- @param f callback function that checks the condition. Should return a truthy value when the condition is met.
--- @param timeout (optional) in seconds. Maximum time to keep waiting, defaults to 2 if omitted.
--- @return nothing, just returns when succesful, or throws an error when timing out.
+--- Waits until a specific condition is met.
+-- The check function will repeatedly be called (with a fixed interval), until the condition is met, or the
+-- timeout value is exceeded.
+-- @param f check function that should return `thruthy` when the condition has been met
+-- @param timeout maximum time to wait after which an error is thrown
+-- @return nothing. It returns when the condition is met, or throws an error when it times out.
+-- @usage -- wait 10 seconds for a file "myfilename" to appear
+-- helpers.wait_until(function() return file_exist("myfilename") end, 10)
 local function wait_until(f, timeout)
   if type(f) ~= "function" then
     error("arg #1 must be a function", 2)
