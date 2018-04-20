@@ -1,13 +1,31 @@
 local utils = require "kong.tools.utils"
 local Errors = require "kong.dao.errors"
+local db_errors = require "kong.db.errors"
+local singletons = require "kong.singletons"
+local constants = require "kong.constants"
 
 local function load_config_schema(plugin_t)
-  if plugin_t.name then
-    local loaded, plugin_schema = utils.load_module_if_exists("kong.plugins."..plugin_t.name..".schema")
+  local plugin_name = plugin_t.name
+
+  if plugin_name then
+
+    if constants.DEPRECATED_PLUGINS[plugin_name] then
+      ngx.log(ngx.WARN, "plugin '", plugin_name, "' has been deprecated")
+    end
+
+    -- singletons.configuration would be nil when plugin operations are
+    -- done through DAOs like in migrations or tests
+    if singletons.configuration and not singletons.configuration.plugins[plugin_name] then
+      return nil, "plugin '" .. plugin_name .. "' not enabled; " ..
+                  "add it to the 'custom_plugins' configuration property"
+    end
+
+    local loaded, plugin_schema = utils.load_module_if_exists("kong.plugins."
+                                    .. plugin_name .. ".schema")
     if loaded then
       return plugin_schema
     else
-      return nil, 'Plugin "'..tostring(plugin_t.name)..'" not found'
+      return nil, 'Plugin "' .. tostring(plugin_name) .. '" not found'
     end
   end
 end
@@ -15,11 +33,13 @@ end
 return {
   table = "plugins",
   primary_key = {"id", "name"},
+  cache_key = { "name", "route_id", "service_id", "consumer_id", "api_id" },
   fields = {
     id = {
       type = "id",
       dao_insert_value = true,
-      required = true
+      required = true,
+      unique = true,
     },
     created_at = {
       type = "timestamp",
@@ -29,8 +49,15 @@ return {
     },
     api_id = {
       type = "id",
-      required = true,
-      foreign = "apis:id"
+      foreign = "apis:id",
+    },
+    route_id = {
+      type = "id",
+      --foreign = "routes:id" -- manually tested in self_check
+    },
+    service_id = {
+      type = "id",
+      --foreign = "services:id" -- manually tested in self_check
     },
     consumer_id = {
       type = "id",
@@ -51,28 +78,48 @@ return {
       default = true
     }
   },
-  marshall_event = function(self, plugin_t)
-    local result = {
-      id = plugin_t.id,
-      api_id = plugin_t.api_id,
-      consumer_id = plugin_t.consumer_id,
-      name = plugin_t.name
-    }
-    if plugin_t and plugin_t.config then
-      local config_schema, err = self.fields.config.schema(plugin_t)
+  self_check = function(self, plugin_t, dao, is_update)
+    if plugin_t.api_id and (plugin_t.route_id or plugin_t.service_id) then
+      return false, Errors.schema("cannot configure plugin with api_id " ..
+                                  "and one of route_id or service_id")
+    end
+
+    if plugin_t.service_id ~= nil then
+      local service, err, err_t = dao.db.new_db.services:select({
+        id = plugin_t.service_id
+      })
       if err then
-        return false, Errors.schema(err)
+        if err_t.code == db_errors.codes.DATABASE_ERROR then
+          return false, Errors.db(err)
+        end
+
+        return false, Errors.schema(err_t)
       end
 
-      if config_schema.marshall_event and type(config_schema.marshall_event) == "function" then
-        result.config = config_schema.marshall_event(plugin_t.config)
-      else
-        result.config = {}
+      if not service then
+        return false, Errors.foreign("no such Service (id=" ..
+                                     plugin_t.service_id .. ")")
       end
     end
-    return result
-  end,
-  self_check = function(self, plugin_t, dao, is_update)
+
+    if plugin_t.route_id ~= nil then
+      local route, err, err_t = dao.db.new_db.routes:select({
+        id = plugin_t.route_id
+      })
+      if err then
+        if err_t.code == db_errors.codes.DATABASE_ERROR then
+          return false, Errors.db(err)
+        end
+
+        return false, Errors.schema(err_t)
+      end
+
+      if not route then
+        return false, Errors.foreign("no such Route (id=" ..
+                                     plugin_t.route_id .. ")")
+      end
+    end
+
     -- Load the config schema
     local config_schema, err = self.fields.config.schema(plugin_t)
     if err then
@@ -95,14 +142,22 @@ return {
       local rows, err = dao:find_all {
         name = plugin_t.name,
         api_id = plugin_t.api_id,
+        route_id = plugin_t.route_id,
+        service_id = plugin_t.service_id,
         consumer_id = plugin_t.consumer_id
       }
+
       if err then
         return false, err
       elseif #rows > 0 then
         for _, row in ipairs(rows) do
-          if row.name == plugin_t.name and row.api_id == plugin_t.api_id and row.consumer_id == plugin_t.consumer_id then
-            return false, Errors.unique "Plugin configuration already exists"
+          if row.name == plugin_t.name and
+             row.api_id == plugin_t.api_id and
+             row.route_id == plugin_t.route_id and
+             row.service_id == plugin_t.service_id and
+             row.consumer_id == plugin_t.consumer_id
+          then
+            return false, Errors.unique { name = plugin_t.name }
           end
         end
       end

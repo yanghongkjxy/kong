@@ -8,7 +8,6 @@ local ngx_log = ngx.log
 local ngx_log_ERR = ngx.ERR
 local ngx_timer_at = ngx.timer.at
 local string_format = string.format
-local string_len = string.len
 
 -- Generates http payload .
 -- @param `method` http method to be used to send data
@@ -19,7 +18,7 @@ local function generate_post_payload(parsed_url, access_token, message)
   local body = cjson.encode(message)
   local payload = string_format(
     "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: Keep-Alive\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %s\r\n\r\n%s",
-    "POST", parsed_url.path, parsed_url.host, access_token, string_len(body), body)
+    "POST", parsed_url.path, parsed_url.host, access_token, #body, body)
   return payload
 end
 
@@ -51,7 +50,7 @@ local function log(premature, conf, message)
   end
 
   local ok, err
-  local parsed_url = parse_url(conf.api_endpoint.."/buckets/"..conf.bucket_key.."/messages")
+  local parsed_url = parse_url(conf.api_endpoint .. "/buckets/" .. conf.bucket_key .. "/messages")
   local access_token = conf.access_token
   local host = parsed_url.host
   local port = tonumber(parsed_url.port)
@@ -61,25 +60,25 @@ local function log(premature, conf, message)
 
   ok, err = sock:connect(host, port)
   if not ok then
-    ngx_log(ngx_log_ERR, "[runscope] failed to connect to "..host..":"..tostring(port)..": ", err)
+    ngx_log(ngx_log_ERR, "[runscope] failed to connect to " .. host .. ":" .. tostring(port) .. ": ", err)
     return
   end
 
   if parsed_url.scheme == HTTPS then
     local _, err = sock:sslhandshake(true, host, false)
     if err then
-      ngx_log(ngx_log_ERR, "[runscope] failed to do SSL handshake with "..host..":"..tostring(port)..": ", err)
+      ngx_log(ngx_log_ERR, "[runscope] failed to do SSL handshake with " .. host .. ":" .. tostring(port) .. ": ", err)
     end
   end
 
-  ok, err = sock:send(generate_post_payload(parsed_url, access_token, message).."\r\n")
+  ok, err = sock:send(generate_post_payload(parsed_url, access_token, message) .. "\r\n")
   if not ok then
-    ngx_log(ngx_log_ERR, "[runscope] failed to send data to "..host..":"..tostring(port)..": ", err)
+    ngx_log(ngx_log_ERR, "[runscope] failed to send data to " .. host .. ":" .. tostring(port) .. ": ", err)
   end
 
   ok, err = sock:setkeepalive(conf.keepalive)
   if not ok then
-    ngx_log(ngx_log_ERR, "[runscope] failed to keepalive to "..host..":"..tostring(port)..": ", err)
+    ngx_log(ngx_log_ERR, "[runscope] failed to keepalive to " .. host .. ":" .. tostring(port) .. ": ", err)
     return
   end
 end

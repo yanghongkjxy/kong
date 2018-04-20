@@ -1,5 +1,6 @@
 local Errors = require "kong.dao.errors"
-local utils = require "kong.tools.utils"
+
+local REDIS = "redis"
 
 local function check_ordered_limits(limit_value)
   local ordered_periods = { "second", "minute", "hour", "day", "month", "year"}
@@ -11,11 +12,11 @@ local function check_ordered_limits(limit_value)
     if limit_value[v] then
       has_value = true
       if limit_value[v] <=0 then
-        invalid_value = "Value for "..v.." must be greater than zero"
+        invalid_value = "Value for " .. v .. " must be greater than zero"
       else
-        for t = i, #ordered_periods do
+        for t = i+1, #ordered_periods do
           if limit_value[ordered_periods[t]] and limit_value[ordered_periods[t]] < limit_value[v] then
-            invalid_order = "The limit for "..ordered_periods[t].." cannot be lower than the limit for "..v
+            invalid_order = "The limit for " .. ordered_periods[t] .. " cannot be lower than the limit for " .. v
           end
         end
       end
@@ -36,7 +37,14 @@ end
 return {
   fields = {
     header_name = { type = "string", default = "x-kong-limit" },
-    continue_on_error = { type = "boolean", default = false },
+    limit_by = { type = "string", enum = {"consumer", "credential", "ip"}, default = "consumer" },
+    policy = { type = "string", enum = {"local", "cluster", REDIS}, default = "cluster" },
+    fault_tolerant = { type = "boolean", default = true },
+    redis_host = { type = "string" },
+    redis_port = { type = "number", default = 6379 },
+    redis_password = { type = "string" },
+    redis_timeout = { type = "number", default = 2000 },
+    redis_database = { type = "number", default = 0 },
     block_on_first_violation = { type = "boolean", default = false},
     limits = { type = "table",
       schema = {
@@ -50,10 +58,11 @@ return {
           year = { type = "number" }
         }
       }
-    }
+    },
+    hide_client_headers = { type = "boolean", default = false },
   },
   self_check = function(schema, plugin_t, dao, is_update)
-    if not plugin_t.limits or utils.table_size(plugin_t.limits) == 0 then
+    if not plugin_t.limits or (not next(plugin_t.limits)) then
       return false, Errors.schema "You need to set at least one limit name"
     else
       for k,v in pairs(plugin_t.limits) do
@@ -61,6 +70,16 @@ return {
         if not ok then
           return false, err
         end
+      end
+    end
+
+    if plugin_t.policy == REDIS then
+      if not plugin_t.redis_host then
+        return false, Errors.schema "You need to specify a Redis host"
+      elseif not plugin_t.redis_port then
+        return false, Errors.schema "You need to specify a Redis port"
+      elseif not plugin_t.redis_timeout then
+        return false, Errors.schema "You need to specify a Redis timeout"
       end
     end
 

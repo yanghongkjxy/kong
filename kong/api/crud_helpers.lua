@@ -1,21 +1,64 @@
-local responses = require "kong.tools.responses"
-local validations = require "kong.dao.schemas_validation"
-local app_helpers = require "lapis.application"
-local utils = require "kong.tools.utils"
-local is_uuid = validations.is_valid_uuid
+local cjson         = require "cjson"
+local utils         = require "kong.tools.utils"
+local responses     = require "kong.tools.responses"
+local app_helpers   = require "lapis.application"
+
+
+local decode_base64 = ngx.decode_base64
+local encode_base64 = ngx.encode_base64
+local encode_args   = ngx.encode_args
+local tonumber      = tonumber
+local ipairs        = ipairs
+local next          = next
+local type          = type
+
+
+local function post_process_row(row, post_process)
+  return type(post_process) == "function" and post_process(row) or row
+end
+
 
 local _M = {}
 
-function _M.find_api_by_name_or_id(self, dao_factory, helpers)
-  local filter_keys = {
-    [is_uuid(self.params.name_or_id) and "id" or "name"] = self.params.name_or_id
-  }
-  self.params.name_or_id = nil
+--- Will look up a value in the dao.
+-- Either by `id` field or by the field named by 'alternate_field'. If the value
+-- is NOT a uuid, then by the 'alternate_field'. If it is a uuid then it will
+-- first try the `id` field, if that doesn't yield anything it will try again
+-- with the 'alternate_field'.
+-- @param dao the specific dao to search
+-- @param filter filter table to use, tries will add to this table
+-- @param value the value to look up
+-- @param alternate_field the field to use if it is not a uuid, or not found in `id`
+function _M.find_by_id_or_field(dao, filter, value, alternate_field)
+  filter = filter or {}
+  local is_uuid = utils.is_valid_uuid(value)
+  filter[is_uuid and "id" or alternate_field] = value
 
-  local rows, err = dao_factory.apis:find_all(filter_keys)
+  local rows, err = dao:find_all(filter)
+  if err then
+    return nil, err
+  end
+
+  if is_uuid and not next(rows) then
+    -- it's a uuid, but yielded no results, so retry with the alternate field
+    filter.id = nil
+    filter[alternate_field] = value
+    rows, err = dao:find_all(filter)
+    if err then
+      return nil, err
+    end
+  end
+  return rows
+end
+
+function _M.find_api_by_name_or_id(self, dao_factory, helpers)
+  local rows, err = _M.find_by_id_or_field(dao_factory.apis, {},
+                                           self.params.api_name_or_id, "name")
+
   if err then
     return helpers.yield_error(err)
   end
+  self.params.api_name_or_id = nil
 
   -- We know name and id are unique for APIs, hence if we have a row, it must be the only one
   self.api = rows[1]
@@ -24,16 +67,27 @@ function _M.find_api_by_name_or_id(self, dao_factory, helpers)
   end
 end
 
-function _M.find_consumer_by_username_or_id(self, dao_factory, helpers)
-  local filter_keys = {
-    [is_uuid(self.params.username_or_id) and "id" or "username"] = self.params.username_or_id
-  }
-  self.params.username_or_id = nil
-
-  local rows, err = dao_factory.consumers:find_all(filter_keys)
+function _M.find_plugin_by_filter(self, dao_factory, filter, helpers)
+  local rows, err = dao_factory.plugins:find_all(filter)
   if err then
     return helpers.yield_error(err)
   end
+
+  -- We know the id is unique, so if we have a row, it must be the only one
+  self.plugin = rows[1]
+  if not self.plugin then
+    return helpers.responses.send_HTTP_NOT_FOUND()
+  end
+end
+
+function _M.find_consumer_by_username_or_id(self, dao_factory, helpers)
+  local rows, err = _M.find_by_id_or_field(dao_factory.consumers, {},
+                                           self.params.username_or_id, "username")
+
+  if err then
+    return helpers.yield_error(err)
+  end
+  self.params.username_or_id = nil
 
   -- We know username and id are unique, so if we have a row, it must be the only one
   self.consumer = rows[1]
@@ -42,11 +96,47 @@ function _M.find_consumer_by_username_or_id(self, dao_factory, helpers)
   end
 end
 
-function _M.paginated_set(self, dao_collection)
-  local size = self.params.size and tonumber(self.params.size) or 100
-  local offset = self.params.offset and ngx.decode_base64(self.params.offset) or nil
+function _M.find_upstream_by_name_or_id(self, dao_factory, helpers)
+  local rows, err = _M.find_by_id_or_field(dao_factory.upstreams, {},
+                                           self.params.upstream_name_or_id, "name")
 
-  self.params.size = nil
+  if err then
+    return helpers.yield_error(err)
+  end
+  self.params.upstream_name_or_id = nil
+
+  -- We know name and id are unique, so if we have a row, it must be the only one
+  self.upstream = rows[1]
+  if not self.upstream then
+    return helpers.responses.send_HTTP_NOT_FOUND()
+  end
+end
+
+-- this function will return the exact target if specified by `id`, or just
+-- 'any target entry' if specified by target (= 'hostname:port')
+function _M.find_target_by_target_or_id(self, dao_factory, helpers)
+  local rows, err = _M.find_by_id_or_field(dao_factory.targets, {},
+                                           self.params.target_or_id, "target")
+
+  if err then
+    return helpers.yield_error(err)
+  end
+  self.params.target_or_id = nil
+
+  -- if looked up by `target` property we can have multiple targets here, but
+  -- anyone will do as they all have the same 'target' field, so just pick
+  -- the first
+  self.target = rows[1]
+  if not self.target then
+    return helpers.responses.send_HTTP_NOT_FOUND()
+  end
+end
+
+function _M.paginated_set(self, dao_collection, post_process)
+  local size   = self.params.size   and tonumber(self.params.size) or 100
+  local offset = self.params.offset and decode_base64(self.params.offset)
+
+  self.params.size   = nil
   self.params.offset = nil
 
   local filter_keys = next(self.params) and self.params
@@ -62,65 +152,76 @@ function _M.paginated_set(self, dao_collection)
   end
 
   local next_url
-  if offset ~= nil then
+  if offset then
+    offset = encode_base64(offset)
     next_url = self:build_url(self.req.parsed_url.path, {
-      port = self.req.parsed_url.port,
-      query = ngx.encode_args {
-        offset = ngx.encode_base64(offset),
-        size = size
+      port     = self.req.parsed_url.port,
+      query    = encode_args {
+        offset = offset,
+        size   = size
       }
     })
   end
 
-  -- This check is required otherwise the response is going to be a
-  -- JSON Object and not a JSON array. The reason is because an empty Lua array `{}`
-  -- will not be translated as an empty array by cjson, but as an empty object.
-  local result = #rows == 0 and "{\"data\":[],\"total\":0}" or {data = rows, ["next"] = next_url, total = total_count}
+  local data = setmetatable(rows, cjson.empty_array_mt)
 
-  return responses.send_HTTP_OK(result, type(result) ~= "table")
+  if type(post_process) == "function" then
+    for i, row in ipairs(rows) do
+      data[i] = post_process(row)
+    end
+  end
+
+  return responses.send_HTTP_OK {
+    data     = data,
+    total    = total_count,
+    offset   = offset,
+    ["next"] = next_url
+  }
 end
 
 -- Retrieval of an entity.
 -- The DAO requires to be given a table containing the full primary key of the entity
-function _M.get(primary_keys, dao_collection)
+function _M.get(primary_keys, dao_collection, post_process)
   local row, err = dao_collection:find(primary_keys)
   if err then
     return app_helpers.yield_error(err)
   elseif row == nil then
     return responses.send_HTTP_NOT_FOUND()
   else
-    return responses.send_HTTP_OK(row)
+    return responses.send_HTTP_OK(post_process_row(row, post_process))
   end
 end
 
 --- Insertion of an entity.
-function _M.post(params, dao_collection, success)
+function _M.post(params, dao_collection, post_process)
   local data, err = dao_collection:insert(params)
   if err then
     return app_helpers.yield_error(err)
   else
-    if success then success(utils.deep_copy(data)) end
-    return responses.send_HTTP_CREATED(data)
+    return responses.send_HTTP_CREATED(post_process_row(data, post_process))
   end
 end
 
 --- Partial update of an entity.
 -- Filter keys must be given to get the row to update.
-function _M.patch(params, dao_collection, filter_keys)
+function _M.patch(params, dao_collection, filter_keys, post_process)
+  if not next(params) then
+    return responses.send_HTTP_BAD_REQUEST("empty body")
+  end
   local updated_entity, err = dao_collection:update(params, filter_keys)
   if err then
     return app_helpers.yield_error(err)
   elseif updated_entity == nil then
     return responses.send_HTTP_NOT_FOUND()
   else
-    return responses.send_HTTP_OK(updated_entity)
+    return responses.send_HTTP_OK(post_process_row(updated_entity, post_process))
   end
 end
 
 -- Full update of an entity.
 -- First, we check if the entity body has primary keys or not,
 -- if it does, we are performing an update, if not, an insert.
-function _M.put(params, dao_collection)
+function _M.put(params, dao_collection, post_process)
   local new_entity, err
 
   local model = dao_collection.model_mt(params)
@@ -128,13 +229,17 @@ function _M.put(params, dao_collection)
     -- If entity body has no primary key, deal with an insert
     new_entity, err = dao_collection:insert(params)
     if not err then
-      return responses.send_HTTP_CREATED(new_entity)
+      return responses.send_HTTP_CREATED(post_process_row(new_entity, post_process))
     end
   else
     -- If entity body has primary key, deal with update
     new_entity, err = dao_collection:update(params, params, {full = true})
     if not err then
-      return responses.send_HTTP_OK(new_entity)
+      if not new_entity then
+        return responses.send_HTTP_NOT_FOUND()
+      end
+
+      return responses.send_HTTP_OK(post_process_row(new_entity, post_process))
     end
   end
 

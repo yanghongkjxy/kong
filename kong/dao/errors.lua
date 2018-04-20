@@ -3,18 +3,23 @@ local setmetatable = setmetatable
 local getmetatable = getmetatable
 local tostring = tostring
 local type = type
+local fmt = string.format
 
 local error_mt = {}
 
 function error_mt.__tostring(t)
+  if t.db_name then
+    return fmt("[%s error] %s", t.db_name, tostring(t.message))
+  end
+
   return tostring(t.message)
 end
 
 function error_mt.__concat(a, b)
   if getmetatable(a) == error_mt then
-    return tostring(a)..b
+    return tostring(a) .. b
   else
-    return a..tostring(b)
+    return a .. tostring(b)
   end
 end
 
@@ -29,21 +34,21 @@ local serializers = {
   [ERRORS.unique] = function(tbl)
     local ret = {}
     for k, v in pairs(tbl) do
-      ret[k] = "already exists with value '"..v.."'"
+      ret[k] = "already exists with value '" .. v .. "'"
     end
     return ret
   end,
   [ERRORS.foreign] = function(tbl)
     local ret = {}
     for k, v in pairs(tbl) do
-      ret[k] = "does not exist with value '"..v.."'"
+      ret[k] = "does not exist with value '" .. v .. "'"
     end
     return ret
   end
 }
 
 local function build_error(err_type)
-  return function(err)
+  return function(err, db_name)
     if err == nil then
       return
     elseif getmetatable(err) == error_mt then
@@ -51,6 +56,7 @@ local function build_error(err_type)
     end
 
     local err_obj = {
+      db_name = db_name,
       [err_type] = true
     }
 

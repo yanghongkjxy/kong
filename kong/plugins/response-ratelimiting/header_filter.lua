@@ -1,5 +1,4 @@
 local utils = require "kong.tools.utils"
-local stringy = require "stringy"
 local responses = require "kong.tools.responses"
 
 local pairs = pairs
@@ -15,13 +14,18 @@ local _M = {}
 local function parse_header(header_value, limits)
   local increments = {}
   if header_value then
-    local parts = stringy.split(header_value, ",")
+    local parts
+    if type(header_value) == "table" then
+      parts = header_value
+    else
+      parts = utils.split(header_value, ",")
+    end
     for _, v in ipairs(parts) do
-      local increment_parts = stringy.split(v, "=")
-      if utils.table_size(increment_parts) == 2 then
-        local limit_name = stringy.strip(increment_parts[1])
+      local increment_parts = utils.split(v, "=")
+      if #increment_parts == 2 then
+        local limit_name = utils.strip(increment_parts[1])
         if limits[limit_name] then -- Only if the limit exists
-          increments[stringy.strip(increment_parts[1])] = tonumber(stringy.strip(increment_parts[2]))
+          increments[utils.strip(increment_parts[1])] = tonumber(utils.strip(increment_parts[2]))
         end
       end
     end
@@ -31,8 +35,8 @@ end
 
 function _M.execute(conf)
   ngx.ctx.increments = {}
-  
-  if utils.table_size(conf.limits) <= 0 then
+
+  if not next(conf.limits) then
     return
   end
 
@@ -41,13 +45,17 @@ function _M.execute(conf)
   ngx.ctx.increments = increments
 
   local usage = ngx.ctx.usage -- Load current usage
-  if not usage then return end
+  if not usage then
+    return
+  end
 
   local stop
-  for limit_name, v in pairs(usage) do
+  for limit_name in pairs(usage) do
     for period_name, lv in pairs(usage[limit_name]) do
-      ngx.header[RATELIMIT_LIMIT.."-"..limit_name.."-"..period_name] = lv.limit
-      ngx.header[RATELIMIT_REMAINING.."-"..limit_name.."-"..period_name] = math_max(0, lv.remaining - (increments[limit_name] and increments[limit_name] or 0)) -- increment_value for this current request
+      if not conf.hide_client_headers then
+        ngx.header[RATELIMIT_LIMIT .. "-" .. limit_name .. "-" .. period_name] = lv.limit
+        ngx.header[RATELIMIT_REMAINING .. "-" .. limit_name .. "-" .. period_name] = math_max(0, lv.remaining - (increments[limit_name] and increments[limit_name] or 0)) -- increment_value for this current request
+      end
 
       if increments[limit_name] and increments[limit_name] > 0 and lv.remaining <= 0 then
         stop = true -- No more

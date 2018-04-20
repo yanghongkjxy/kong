@@ -12,6 +12,7 @@ function OAuthHandler:access(conf)
   access.execute(conf)
 end
 
-OAuthHandler.PRIORITY = 1000
+OAuthHandler.PRIORITY = 1004
+OAuthHandler.VERSION = "0.1.0"
 
 return OAuthHandler

@@ -1,24 +1,24 @@
-#!/bin/bash
-
+#!/usr/bin/env bash
 set -e
 
-if [ "$TEST_SUITE" == "unit" ]; then
-  kong config -c kong.yml -e TEST -s TEST
-else
-  kong config -c kong.yml -d $DATABASE -e TEST -s TEST
-fi
+export BUSTED_ARGS="-o gtest -v --exclude-tags=flaky,ipv6"
+export TEST_CMD="bin/busted $BUSTED_ARGS"
 
 createuser --createdb kong
 createdb -U kong kong_tests
 
-CMD="busted -v -o gtest --exclude-tags=ci"
-
-if [ "$TEST_SUITE" == "unit" ]; then
-  CMD="$CMD --coverage spec/unit && luacov-coveralls -i kong"
-elif [ "$TEST_SUITE" == "plugins" ]; then
-  CMD="$CMD spec/plugins"
+if [ "$TEST_SUITE" == "lint" ]; then
+    make lint
+elif [ "$TEST_SUITE" == "unit" ]; then
+    make test
 elif [ "$TEST_SUITE" == "integration" ]; then
-  CMD="$CMD spec/integration"
+    make test-integration
+elif [ "$TEST_SUITE" == "plugins" ]; then
+    make test-plugins
+elif [ "$TEST_SUITE" == "old-unit" ]; then
+    make old-test
+elif [ "$TEST_SUITE" == "old-integration" ]; then
+    make old-test-integration
+elif [ "$TEST_SUITE" == "old-plugins" ]; then
+    make old-test-plugins
 fi
-
-eval $CMD

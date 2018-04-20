@@ -1,62 +1,54 @@
--- Copyright (C) Mashape, Inc.
+-- Copyright (C) Kong Inc.
 
+local policies = require "kong.plugins.rate-limiting.policies"
 local timestamp = require "kong.tools.timestamp"
 local responses = require "kong.tools.responses"
-local singletons = require "kong.singletons"
 local BasePlugin = require "kong.plugins.base_plugin"
 
+local ngx_log = ngx.log
 local pairs = pairs
 local tostring = tostring
+local ngx_timer_at = ngx.timer.at
 
 local RATELIMIT_LIMIT = "X-RateLimit-Limit"
 local RATELIMIT_REMAINING = "X-RateLimit-Remaining"
 
 local RateLimitingHandler = BasePlugin:extend()
 
-RateLimitingHandler.PRIORITY = 900
+RateLimitingHandler.PRIORITY = 901
+RateLimitingHandler.VERSION = "0.1.0"
 
-local function get_identifier()
+local function get_identifier(conf)
   local identifier
 
   -- Consumer is identified by ip address or authenticated_credential id
-  if ngx.ctx.authenticated_credential then
-    identifier = ngx.ctx.authenticated_credential.id
-  else
+  if conf.limit_by == "consumer" then
+    identifier = ngx.ctx.authenticated_consumer and ngx.ctx.authenticated_consumer.id
+    if not identifier and ngx.ctx.authenticated_credential then -- Fallback on credential
+      identifier = ngx.ctx.authenticated_credential.id
+    end
+  elseif conf.limit_by == "credential" then
+    identifier = ngx.ctx.authenticated_credential and ngx.ctx.authenticated_credential.id
+  end
+
+  if not identifier then
     identifier = ngx.var.remote_addr
   end
 
   return identifier
 end
 
-local function increment(api_id, identifier, current_timestamp, value)
-  -- Increment metrics for all periods if the request goes through
-  local _, stmt_err = singletons.dao.ratelimiting_metrics:increment(api_id, identifier, current_timestamp, value)
-  if stmt_err then
-    return false, stmt_err
-  end
-  return true
-end
-
-local function increment_async(premature, api_id, identifier, current_timestamp, value)
-  if premature then return end
-  local _, stmt_err = singletons.dao.ratelimiting_metrics:increment(api_id, identifier, current_timestamp, value)
-  if stmt_err then
-    ngx.log(ngx.ERR, "failed to increment: ", tostring(stmt_err))
-  end
-end
-
-local function get_usage(api_id, identifier, current_timestamp, limits)
+local function get_usage(conf, identifier, current_timestamp, limits)
   local usage = {}
   local stop
 
   for name, limit in pairs(limits) do
-    local current_metric, err = singletons.dao.ratelimiting_metrics:find(api_id, identifier, current_timestamp, name)
+    local current_usage, err = policies[conf.policy].usage(conf, identifier, current_timestamp, name)
     if err then
       return nil, nil, err
     end
 
     -- What is the current usage for the configured limit name?
-    local current_usage = current_metric and current_metric.value or 0
     local remaining = limit - current_usage
 
     -- Recording usage
@@ -82,18 +74,24 @@ function RateLimitingHandler:access(conf)
   local current_timestamp = timestamp.get_utc()
 
   -- Consumer is identified by ip address or authenticated_credential id
-  local identifier = get_identifier()
-  local api_id = ngx.ctx.api.id
-  local is_async = conf.async
-  local is_continue_on_error = conf.continue_on_error
+  local identifier = get_identifier(conf)
+  local policy = conf.policy
+  local fault_tolerant = conf.fault_tolerant
 
   -- Load current metric for configured period
-  conf.async = nil
-  conf.continue_on_error = nil
-  local usage, stop, err = get_usage(api_id, identifier, current_timestamp, conf)
+  local limits = {
+    second = conf.second,
+    minute = conf.minute,
+    hour = conf.hour,
+    day = conf.day,
+    month = conf.month,
+    year = conf.year
+  }
+
+  local usage, stop, err = get_usage(conf, identifier, current_timestamp, limits)
   if err then
-    if is_continue_on_error then
-      ngx.log(ngx.ERR, "failed to get usage: ", tostring(err))
+    if fault_tolerant then
+      ngx_log(ngx.ERR, "failed to get usage: ", tostring(err))
     else
       return responses.send_HTTP_INTERNAL_SERVER_ERROR(err)
     end
@@ -101,9 +99,11 @@ function RateLimitingHandler:access(conf)
 
   if usage then
     -- Adding headers
-    for k, v in pairs(usage) do
-      ngx.header[RATELIMIT_LIMIT.."-"..k] = v.limit
-      ngx.header[RATELIMIT_REMAINING.."-"..k] = math.max(0, (stop == nil or stop == k) and v.remaining - 1 or v.remaining) -- -increment_value for this current request
+    if not conf.hide_client_headers then
+      for k, v in pairs(usage) do
+        ngx.header[RATELIMIT_LIMIT .. "-" .. k] = v.limit
+        ngx.header[RATELIMIT_REMAINING .. "-" .. k] = math.max(0, (stop == nil or stop == k) and v.remaining - 1 or v.remaining) -- -increment_value for this current request
+      end
     end
 
     -- If limit is exceeded, terminate the request
@@ -112,21 +112,17 @@ function RateLimitingHandler:access(conf)
     end
   end
 
-  -- Increment metrics for all periods if the request goes through
-  if is_async then
-    local ok, err = ngx.timer.at(0, increment_async, api_id, identifier, current_timestamp, 1)
-    if not ok then
-      ngx.log(ngx.ERR, "failed to create timer: ", err)
+  local incr = function(premature, conf, limits, identifier, current_timestamp, value)
+    if premature then
+      return
     end
-  else
-    local _, err = increment(api_id, identifier, current_timestamp, 1)
-    if err then
-      if is_continue_on_error then
-        ngx.log(ngx.ERR, "failed to increment: ", tostring(err))
-      else
-        return responses.send_HTTP_INTERNAL_SERVER_ERROR(err)
-      end
-    end
+    policies[policy].increment(conf, limits, identifier, current_timestamp, value)
+  end
+
+  -- Increment metrics for configured periods if the request goes through
+  local ok, err = ngx_timer_at(0, incr, conf, limits, identifier, current_timestamp, 1)
+  if not ok then
+    ngx_log(ngx.ERR, "failed to create timer: ", err)
   end
 end
 

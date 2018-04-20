@@ -1,4 +1,4 @@
--- Copyright (C) Mashape, Inc.
+-- Copyright (C) Kong Inc.
 
 local BasePlugin = require "kong.plugins.base_plugin"
 local access = require "kong.plugins.hmac-auth.access"
@@ -14,6 +14,7 @@ function HMACAuthHandler:access(conf)
   access.execute(conf)
 end
 
-HMACAuthHandler.PRIORITY = 999
+HMACAuthHandler.PRIORITY = 1000
+HMACAuthHandler.VERSION = "0.1.0"
 
 return HMACAuthHandler

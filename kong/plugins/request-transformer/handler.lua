@@ -12,6 +12,7 @@ function RequestTransformerHandler:access(conf)
   access.execute(conf)
 end
 
-RequestTransformerHandler.PRIORITY = 800
+RequestTransformerHandler.PRIORITY = 801
+RequestTransformerHandler.VERSION = "0.1.0"
 
 return RequestTransformerHandler

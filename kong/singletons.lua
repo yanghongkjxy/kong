@@ -1,9 +1,12 @@
 local _M = {
   configuration = nil,
-  events = nil,
   dao = nil,
-  serf = nil,
-  loaded_plugins = nil
+  db = nil,
+  ip = nil,
+  dns = nil,
+  loaded_plugins = nil,
+  worker_events = nil,
+  router = nil,
 }
 
 return _M

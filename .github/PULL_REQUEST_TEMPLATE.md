@@ -1,4 +1,7 @@
-**Note: new features are to be opened against next, hotfixes against master.**
+NOTE: Please read the CONTRIBUTING.md guidelines before submitting your patch,
+and ensure you followed them all:
+
+https://github.com/Kong/kong/blob/master/CONTRIBUTING.md#contributing
 
 ### Summary
 

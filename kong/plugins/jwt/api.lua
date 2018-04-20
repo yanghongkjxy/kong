@@ -11,27 +11,35 @@ return {
       crud.paginated_set(self, dao_factory.jwt_secrets)
     end,
 
-    PUT = function(self, dao_factory)
+    PUT = function(self, dao_factory, helpers)
       crud.put(self.params, dao_factory.jwt_secrets)
     end,
 
-    POST = function(self, dao_factory)
+    POST = function(self, dao_factory, helpers)
       crud.post(self.params, dao_factory.jwt_secrets)
     end
   },
 
-  ["/consumers/:username_or_id/jwt/:id"] = {
+  ["/consumers/:username_or_id/jwt/:jwt_key_or_id"] = {
     before = function(self, dao_factory, helpers)
       crud.find_consumer_by_username_or_id(self, dao_factory, helpers)
       self.params.consumer_id = self.consumer.id
 
-      local err
-      self.jwt_secret, err = dao_factory.jwt_secrets:find(self.params)
+      local credentials, err = crud.find_by_id_or_field(
+        dao_factory.jwt_secrets,
+        { consumer_id = self.params.consumer_id },
+        ngx.unescape_uri(self.params.jwt_key_or_id),
+        "key"
+      )
+
       if err then
         return helpers.yield_error(err)
-      elseif self.jwt_secret == nil then
+      elseif next(credentials) == nil then
         return helpers.responses.send_HTTP_NOT_FOUND()
       end
+      self.params.jwt_key_or_id = nil
+
+      self.jwt_secret = credentials[1]
     end,
 
     GET = function(self, dao_factory, helpers)
@@ -44,6 +52,35 @@ return {
 
     DELETE = function(self, dao_factory)
       crud.delete(self.jwt_secret, dao_factory.jwt_secrets)
+    end
+  },
+  ["/jwts/"] = {
+    GET = function(self, dao_factory)
+      crud.paginated_set(self, dao_factory.jwt_secrets)
+    end
+  },
+  ["/jwts/:jwt_key_or_id/consumer"] = {
+    before = function(self, dao_factory, helpers)
+      local credentials, err = crud.find_by_id_or_field(
+        dao_factory.jwt_secrets,
+        nil,
+        ngx.unescape_uri(self.params.jwt_key_or_id),
+        "key"
+      )
+
+      if err then
+        return helpers.yield_error(err)
+      elseif next(credentials) == nil then
+        return helpers.responses.send_HTTP_NOT_FOUND()
+      end
+
+      self.params.jwt_key_or_id = nil
+      self.params.username_or_id = credentials[1].consumer_id
+      crud.find_consumer_by_username_or_id(self, dao_factory, helpers)
+    end,
+
+    GET = function(self, dao_factory,helpers)
+      return helpers.responses.send_HTTP_OK(self.consumer)
     end
   }
 }

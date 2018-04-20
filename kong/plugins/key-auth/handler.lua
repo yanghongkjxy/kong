@@ -1,109 +1,242 @@
-local singletons = require "kong.singletons"
-local cache = require "kong.tools.database_cache"
 local responses = require "kong.tools.responses"
 local constants = require "kong.constants"
+local singletons = require "kong.singletons"
+local public_tools = require "kong.tools.public"
 local BasePlugin = require "kong.plugins.base_plugin"
+local multipart = require "multipart"
+local cjson = require "cjson"
 
-local realm = 'Key realm="'.._KONG._NAME..'"'
+local ngx_set_header = ngx.req.set_header
+local ngx_get_headers = ngx.req.get_headers
+local set_uri_args = ngx.req.set_uri_args
+local get_uri_args = ngx.req.get_uri_args
+local clear_header = ngx.req.clear_header
+local ngx_req_read_body = ngx.req.read_body
+local ngx_req_set_body_data = ngx.req.set_body_data
+local ngx_encode_args = ngx.encode_args
+local get_method = ngx.req.get_method
+local type = type
+
+local _realm = 'Key realm="' .. _KONG._NAME .. '"'
 
 local KeyAuthHandler = BasePlugin:extend()
 
-KeyAuthHandler.PRIORITY = 1000
-
--- Fast lookup for credential retrieval depending on the type of the authentication
---
--- All methods must respect:
---
--- @param request ngx request object
--- @param {table} conf Plugin config
--- @return {string} public_key
--- @return {string} private_key
-local retrieve_credentials = {
-  header = function(request, conf)
-    local key
-    local headers = request.get_headers()
-
-    if conf.key_names then
-      for _, key_name in ipairs(conf.key_names) do
-        if headers[key_name] ~= nil then
-          key = headers[key_name]
-
-          if conf.hide_credentials then
-            request.clear_header(key_name)
-          end
-
-          return key
-        end
-      end
-    end
-  end,
-  query = function(request, conf)
-    if conf.key_names then
-      local key
-      local uri_params = request.get_uri_args()
-      for _, key_name in ipairs(conf.key_names) do
-        key = uri_params[key_name]
-        if key ~= nil then
-          if conf.hide_credentials then
-            uri_params[key_name] = nil
-            request.set_uri_args(uri_params)
-          end
-          return key
-        end
-      end
-    end
-  end
-}
+KeyAuthHandler.PRIORITY = 1003
+KeyAuthHandler.VERSION = "0.1.0"
 
 function KeyAuthHandler:new()
   KeyAuthHandler.super.new(self, "key-auth")
 end
 
+local function load_credential(key)
+  local creds, err = singletons.dao.keyauth_credentials:find_all {
+    key = key
+  }
+  if not creds then
+    return nil, err
+  end
+  return creds[1]
+end
+
+local function load_consumer(consumer_id, anonymous)
+  local result, err = singletons.dao.consumers:find { id = consumer_id }
+  if not result then
+    if anonymous and not err then
+      err = 'anonymous consumer "' .. consumer_id .. '" not found'
+    end
+    return nil, err
+  end
+  return result
+end
+
+local function set_consumer(consumer, credential)
+  ngx_set_header(constants.HEADERS.CONSUMER_ID, consumer.id)
+  ngx_set_header(constants.HEADERS.CONSUMER_CUSTOM_ID, consumer.custom_id)
+  ngx_set_header(constants.HEADERS.CONSUMER_USERNAME, consumer.username)
+  ngx.ctx.authenticated_consumer = consumer
+  if credential then
+    ngx_set_header(constants.HEADERS.CREDENTIAL_USERNAME, credential.username)
+    ngx.ctx.authenticated_credential = credential
+    ngx_set_header(constants.HEADERS.ANONYMOUS, nil) -- in case of auth plugins concatenation
+  else
+    ngx_set_header(constants.HEADERS.ANONYMOUS, true)
+  end
+
+end
+
+
+local hide_body_credentials
+do
+  local MIME_TYPES = public_tools.req_mime_types
+
+
+  hide_body_credentials = {
+    [MIME_TYPES.form_url_encoded] = function(key, body)
+      body[key] = nil
+      return ngx_encode_args(body)
+    end,
+
+    [MIME_TYPES.json] = function(key, body)
+      body[key] = nil
+      return cjson.encode(body)
+    end,
+
+    [MIME_TYPES.multipart] = function(key, _, raw_body)
+      -- im not a fan of recreating the lua-multipart object here,
+      -- but the current Kong API doesn't provide us the original
+      -- metatable, so our hands are tied here
+      local m_body = multipart(raw_body, ngx.var.content_type)
+      m_body:delete(key)
+      return m_body:tostring()
+    end,
+  }
+end
+
+
+local function do_authentication(conf)
+  if type(conf.key_names) ~= "table" then
+    ngx.log(ngx.ERR, "[key-auth] no conf.key_names set, aborting plugin execution")
+    return false, {status = 500, message= "Invalid plugin configuration"}
+  end
+
+  local key
+  local headers = ngx_get_headers()
+  local uri_args = get_uri_args()
+  local body_data, raw_body, req_mime
+
+  -- read in the body if we want to examine POST args
+  if conf.key_in_body then
+    ngx_req_read_body()
+    local err
+    body_data, err, raw_body, req_mime = public_tools.get_body_info()
+
+    if err then
+      return false, { status = 400, message = "Cannot process request body" }
+    end
+  end
+
+  -- search in headers & querystring
+  for i = 1, #conf.key_names do
+    local name = conf.key_names[i]
+    local v = headers[name]
+    if not v then
+      -- search in querystring
+      v = uri_args[name]
+    end
+
+    -- search the body, if we asked to
+    if not v and conf.key_in_body then
+      v = body_data[name]
+    end
+
+    if type(v) == "string" then
+      key = v
+      if conf.hide_credentials then
+        uri_args[name] = nil
+        set_uri_args(uri_args)
+        clear_header(name)
+
+        if conf.key_in_body then
+          if not hide_body_credentials[req_mime] then
+            -- the request was indeed well formed but could not be processed
+            -- the status '422' might be a good candidate here, but it's part
+            -- of the WebDAV extension, so it doesn't seem appropriate here
+            -- and a 5xx status seems inappropriate as well- the server (plugin)
+            -- configuration is not incorrect. it's up to the client to present
+            -- the appropriate body encoding, given the server configuration
+            -- this places an onus of responsibility on the server operator to
+            -- properly document the acceptable body encodings when
+            -- 'hide_credentials' and 'key_in_body' are both set
+            return false, { status = 400, message = "Cannot process request body" }
+          end
+
+          ngx_req_set_body_data(hide_body_credentials[req_mime](
+            name,
+            body_data,
+            raw_body
+          ))
+        end
+      end
+      break
+    elseif type(v) == "table" then
+      -- duplicate API key, HTTP 401
+      return false, {status = 401, message = "Duplicate API key found"}
+    end
+  end
+
+  -- this request is missing an API key, HTTP 401
+  if not key then
+    ngx.header["WWW-Authenticate"] = _realm
+    return false, { status = 401, message = "No API key found in request" }
+  end
+
+  -- retrieve our consumer linked to this API key
+
+  local cache = singletons.cache
+  local dao = singletons.dao
+
+  local credential_cache_key = dao.keyauth_credentials:cache_key(key)
+  local credential, err = cache:get(credential_cache_key, nil,
+                                    load_credential, key)
+  if err then
+    return responses.send_HTTP_INTERNAL_SERVER_ERROR(err)
+  end
+
+  -- no credential in DB, for this key, it is invalid, HTTP 403
+  if not credential then
+    return false, {status = 403, message = "Invalid authentication credentials"}
+  end
+
+  -----------------------------------------
+  -- Success, this request is authenticated
+  -----------------------------------------
+
+  -- retrieve the consumer linked to this API key, to set appropriate headers
+
+  local consumer_cache_key = dao.consumers:cache_key(credential.consumer_id)
+  local consumer, err = cache:get(consumer_cache_key, nil, load_consumer,
+                                  credential.consumer_id)
+  if err then
+    return responses.send_HTTP_INTERNAL_SERVER_ERROR(err)
+  end
+
+  set_consumer(consumer, credential)
+
+  return true
+end
+
+
 function KeyAuthHandler:access(conf)
   KeyAuthHandler.super.access(self)
-  local key, key_found, credential
-  for _, v in ipairs({"query", "header"}) do
-    key = retrieve_credentials[v](ngx.req, conf)
-    if key then
-      key_found = true
-      credential = cache.get_or_set(cache.keyauth_credential_key(key), function()
-        local credentials, err = singletons.dao.keyauth_credentials:find_all {key = key}
-        local result
-        if err then
-          return responses.send_HTTP_INTERNAL_SERVER_ERROR(err)
-        elseif #credentials > 0 then
-          result = credentials[1]
-        end
-        return result
-      end)
-      if credential then break end
+
+  -- check if preflight request and whether it should be authenticated
+  if not conf.run_on_preflight and get_method() == "OPTIONS" then
+    return
+  end
+
+  if ngx.ctx.authenticated_credential and conf.anonymous ~= "" then
+    -- we're already authenticated, and we're configured for using anonymous,
+    -- hence we're in a logical OR between auth methods and we're already done.
+    return
+  end
+
+  local ok, err = do_authentication(conf)
+  if not ok then
+    if conf.anonymous ~= "" then
+      -- get anonymous user
+      local consumer_cache_key = singletons.dao.consumers:cache_key(conf.anonymous)
+      local consumer, err = singletons.cache:get(consumer_cache_key, nil,
+                                                 load_consumer,
+                                                 conf.anonymous, true)
+      if err then
+        responses.send_HTTP_INTERNAL_SERVER_ERROR(err)
+      end
+      set_consumer(consumer, nil)
+    else
+      return responses.send(err.status, err.message)
     end
   end
-
-  -- No key found in the request's headers or parameters
-  if not key_found then
-    ngx.header["WWW-Authenticate"] = realm
-    return responses.send_HTTP_UNAUTHORIZED("No API Key found in headers, body or querystring")
-  end
-
-  -- No key found in the DB, this credential is invalid
-  if not credential then
-    return responses.send_HTTP_FORBIDDEN("Invalid authentication credentials")
-  end
-
-  -- Retrieve consumer
-  local consumer = cache.get_or_set(cache.consumer_key(credential.consumer_id), function()
-    local result, err = singletons.dao.consumers:find {id = credential.consumer_id}
-    if err then
-      return responses.send_HTTP_INTERNAL_SERVER_ERROR(err)
-    end
-    return result
-  end)
-
-  ngx.req.set_header(constants.HEADERS.CONSUMER_ID, consumer.id)
-  ngx.req.set_header(constants.HEADERS.CONSUMER_CUSTOM_ID, consumer.custom_id)
-  ngx.req.set_header(constants.HEADERS.CONSUMER_USERNAME, consumer.username)
-  ngx.ctx.authenticated_credential = credential
 end
+
 
 return KeyAuthHandler

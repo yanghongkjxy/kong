@@ -20,18 +20,26 @@ return{
     end
   },
 
-  ["/consumers/:username_or_id/hmac-auth/:id"]  = {
+  ["/consumers/:username_or_id/hmac-auth/:hmac_username_or_id"]  = {
     before = function(self, dao_factory, helpers)
       crud.find_consumer_by_username_or_id(self, dao_factory, helpers)
       self.params.consumer_id = self.consumer.id
 
-      local err
-      self.hmacauth_credential, err = dao_factory.hmacauth_credentials:find(self.params)
+      local credentials, err = crud.find_by_id_or_field(
+        dao_factory.hmacauth_credentials,
+        { consumer_id = self.params.consumer_id },
+        ngx.unescape_uri(self.params.hmac_username_or_id),
+        "username"
+      )
+
       if err then
         return helpers.yield_error(err)
-      elseif self.hmacauth_credential == nil then
+      elseif next(credentials) == nil then
         return helpers.responses.send_HTTP_NOT_FOUND()
       end
+      self.params.hmac_username_or_id = nil
+
+      self.hmacauth_credential = credentials[1]
     end,
 
     GET = function(self, dao_factory, helpers)
@@ -44,6 +52,35 @@ return{
 
     DELETE = function(self, dao_factory)
       crud.delete(self.hmacauth_credential, dao_factory.hmacauth_credentials)
+    end
+  },
+  ["/hmac-auths/"] = {
+    GET = function(self, dao_factory)
+      crud.paginated_set(self, dao_factory.hmacauth_credentials)
+    end
+  },
+  ["/hmac-auths/:hmac_username_or_id/consumer"] = {
+    before = function(self, dao_factory, helpers)
+      local credentials, err = crud.find_by_id_or_field(
+        dao_factory.hmacauth_credentials,
+        {},
+        ngx.unescape_uri(self.params.hmac_username_or_id),
+        "username"
+      )
+
+      if err then
+        return helpers.yield_error(err)
+      elseif next(credentials) == nil then
+        return helpers.responses.send_HTTP_NOT_FOUND()
+      end
+
+      self.params.hmac_username_or_id = nil
+      self.params.username_or_id = credentials[1].consumer_id
+      crud.find_consumer_by_username_or_id(self, dao_factory, helpers)
+    end,
+
+    GET = function(self, dao_factory,helpers)
+      return helpers.responses.send_HTTP_OK(self.consumer)
     end
   }
 }
